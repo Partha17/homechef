@@ -19,7 +19,7 @@ async function main() {
       lat: 12.9352,
       lng: 77.6245,
       deliveryRadiusKm: 5,
-      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "8851906476:AAGzz9pDZZv3b8hzhd5kJZ2iDyhunvI7PZg",
+      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
       upiId: "priya@paytm",
       isActive: true,
     },
