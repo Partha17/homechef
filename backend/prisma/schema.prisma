@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Kitchen {
+  id                String   @id @default(uuid())
+  name              String
+  ownerName         String   @map("owner_name")
+  phone             String
+  address           String
+  lat               Float?
+  lng               Float?
+  deliveryRadiusKm  Float?   @map("delivery_radius_km")
+  telegramBotToken  String?  @map("telegram_bot_token")
+  upiId             String?  @map("upi_id")
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  menuItems     MenuItem[]
+  orders        Order[]
+  subscriptions Subscription[]
+  dailyInventory DailyInventory[]
+
+  @@map("kitchens")
+}
+
+model MenuItem {
+  id            String   @id @default(uuid())
+  kitchenId     String   @map("kitchen_id")
+  name          String
+  description   String?
+  category      String   // breakfast, lunch, dinner
+  price         Decimal  @db.Decimal(10, 2)
+  isAvailable   Boolean  @default(true) @map("is_available")
+  maxDailyQty   Int      @default(0) @map("max_daily_qty")
+  imageUrl      String?  @map("image_url")
+  batchTimeSlots String[] @map("batch_time_slots")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  kitchen        Kitchen          @relation(fields: [kitchenId], references: [id])
+  orderItems     OrderItem[]
+  dailyInventory DailyInventory[]
+
+  @@map("menu_items")
+}
+
+model Customer {
+  id              String   @id @default(uuid())
+  telegramUserId  String   @unique @map("telegram_user_id")
+  name            String?
+  phone           String?
+  defaultKitchenId String?  @map("default_kitchen_id")
+  preferences     Json?
+  marketingOptIn  Boolean  @default(false) @map("marketing_opt_in")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  orders       Order[]
+  ratings      Rating[]
+  subscriptions Subscription[]
+  customerContexts CustomerContext[]
+
+  @@map("customers")
+}
+
+model Order {
+  id                String   @id @default(uuid())
+  kitchenId         String   @map("kitchen_id")
+  customerId        String   @map("customer_id")
+  orderType         String   @default("one_time") @map("order_type") // one_time, subscription
+  status            String   @default("pending") // pending, confirmed, preparing, ready, delivered, cancelled
+  batchTimeSlot     String?  @map("batch_time_slot")
+  deliveryAddress   String?  @map("delivery_address")
+  totalAmount       Decimal  @db.Decimal(10, 2) @map("total_amount")
+  paymentStatus     String   @default("unpaid") @map("payment_status") // pending, paid, unpaid, disputed
+  paymentScreenshotUrl String? @map("payment_screenshot_url")
+  paymentVerifiedAt DateTime? @map("payment_verified_at")
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  readyByTime       DateTime? @map("ready_by_time")
+  deliveredAt       DateTime? @map("delivered_at")
+
+  kitchen    Kitchen     @relation(fields: [kitchenId], references: [id])
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  orderItems OrderItem[]
+  ratings    Rating[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id         String  @id @default(uuid())
+  orderId    String  @map("order_id")
+  menuItemId String? @map("menu_item_id")
+  itemName   String  @map("item_name")
+  quantity   Int
+  unitPrice  Decimal @db.Decimal(10, 2) @map("unit_price")
+  lineTotal  Decimal @db.Decimal(10, 2) @map("line_total")
+
+  order    Order    @relation(fields: [orderId], references: [id])
+  menuItem MenuItem? @relation(fields: [menuItemId], references: [id])
+
+  @@unique([orderId, menuItemId])
+  @@map("order_items")
+}
+
+model Subscription {
+  id           String   @id @default(uuid())
+  customerId   String   @map("customer_id")
+  kitchenId    String   @map("kitchen_id")
+  menuItemIds  String[] @map("menu_item_ids")
+  daysOfWeek   Int[]    @map("days_of_week") // 0=Sun, 1=Mon, ...
+  startDate    DateTime @map("start_date")
+  endDate      DateTime? @map("end_date")
+  status       String   @default("active") // active, paused, cancelled
+  dailyQuantity Int     @default(1) @map("daily_quantity")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  kitchen  Kitchen  @relation(fields: [kitchenId], references: [id])
+
+  @@map("subscriptions")
+}
+
+model Rating {
+  id               String   @id @default(uuid())
+  orderId          String   @map("order_id")
+  customerId       String   @map("customer_id")
+  kitchenId        String   @map("kitchen_id")
+  score            Int      // 1-5
+  complaintCategory String? @map("complaint_category")
+  complaintText    String?  @map("complaint_text")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  order    Order    @relation(fields: [orderId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@map("ratings")
+}
+
+model CustomerContext {
+  id                  String   @id @default(uuid())
+  customerId          String   @map("customer_id")
+  kitchenId           String   @map("kitchen_id")
+  conversationHistory Json?    @map("conversation_history")
+  preferences         Json?
+  lastInteractionAt   DateTime? @map("last_interaction_at")
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@unique([customerId, kitchenId])
+  @@map("customer_context")
+}
+
+model DailyInventory {
+  id            String   @id @default(uuid())
+  kitchenId     String   @map("kitchen_id")
+  date          DateTime @map("date")
+  menuItemId    String   @map("menu_item_id")
+  batchTimeSlot String   @map("batch_time_slot") // breakfast, lunch, dinner
+  maxQty        Int      @map("max_qty")
+  bookedQty     Int      @default(0) @map("booked_qty")
+  remainingQty  Int      @map("remaining_qty")
+
+  kitchen  Kitchen  @relation(fields: [kitchenId], references: [id])
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id])
+
+  @@unique([kitchenId, date, menuItemId, batchTimeSlot])
+  @@map("daily_inventory")
+}
