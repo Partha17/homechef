@@ -133,6 +133,12 @@ async function handleTextMessage(kitchen: any, message: any) {
     return;
   }
 
+  // Handle "confirm" / "place order" / "yes" text to place order
+  if (["confirm", "place order", "yes", "that's all", "that is all"].includes(text.toLowerCase())) {
+    await confirmOrder(kitchen, chatId, from);
+    return;
+  }
+
   // Fallback: general query
   await sendTelegramMessage(kitchen.telegramBotToken, chatId,
     "I'm not sure I understood. Try:\n" +
