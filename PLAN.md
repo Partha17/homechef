@@ -72,7 +72,7 @@ A platform that empowers home chefs and cloud kitchens (especially women operati
 | **Telegram** | Telegraf.js (single bot instance) | Mature, well-maintained, multi-bot support |
 | **Owner App** | React PWA (mobile-first) | Works on Android, iOS, desktop; installable |
 | **Admin Panel** | React (web) | Centralized management |
-| **DevOps** | Docker + Docker Compose + VPS | Portable, easy deployment |
+| **DevOps** | Docker + Docker Compose (local) | Portable, runs entirely on dev machine |
 
 ---
 
@@ -349,7 +349,7 @@ daily_inventory: id, kitchen_id, date, menu_item_id,
 
 ### 4. State Management Failure Modes
 
-**Problem:** LangChain's default `ConversationBufferMemory` stores conversation history in-memory (a JavaScript array). If the Node.js process restarts (VPS reboot, deployment, crash), **all in-flight conversations are lost**. The customer who was mid-way through building a cart with "2 biryani and 1 dal makhani" suddenly has to start over.
+**Problem:** LangChain's default `ConversationBufferMemory` stores conversation history in-memory (a JavaScript array). If the Node.js process restarts (local Docker restart or crash), **all in-flight conversations are lost**. The customer who was mid-way through building a cart with "2 biryani and 1 dal makhani" suddenly has to start over.
 
 **Solution: Three-Layer Memory Architecture with Redis Persistence**
 
@@ -408,7 +408,7 @@ daily_inventory: id, kitchen_id, date, menu_item_id,
 **Recovery Flow on Restart:**
 
 ```
-VPS Reboot / Node.js Crash
+Local Docker Restart / Node.js Crash
         ↓
 Bot receives next message from user
         ↓
@@ -829,7 +829,8 @@ homechef/
 - [ ] Authentication (Telegram OTP for owners, JWT for admin)
 - [ ] Single webhook route: `POST /api/telegram/webhook/:kitchen_id`
 - [ ] BullMQ queue setup for async job processing
-- [ ] Docker setup + deploy to VPS
+- [ ] Docker setup for local development (PostgreSQL + Redis + BullMQ via docker-compose)
+- [ ] ngrok/localtunnel setup for Telegram webhook (expose `localhost:3000` to the internet)
 
 ### Week 2-3: Core Ordering Flow + Payments
 - [ ] Menu management CRUD API
@@ -870,17 +871,18 @@ homechef/
 
 ---
 
-## Estimated Monthly Costs (per kitchen)
+## Estimated Monthly Costs (MVP — Local-Only, $0/mo)
 
 | Item | Cost |
 |---|---|
-| VPS (2GB RAM, 2 vCPU) | ~$10-12/mo |
+| Docker Desktop (macOS) | Free (Personal plan) |
 | DeepSeek V4 API (~500 queries/day) | ~$3-5/mo |
-| PostgreSQL + Redis + BullMQ | Included in VPS |
-| Domain (optional) | ~$10/yr |
-| **Total per kitchen** | **~$15-20/mo** |
+| PostgreSQL + Redis + BullMQ | Docker containers (free) |
+| ngrok / localtunnel (Telegram webhook) | Free tier (ngrok: 40 conn/min, 8K req/day) |
+| **Total for MVP (per kitchen)** | **~$3-8/mo** (API costs only) |
 
-Multiple kitchens can share the same VPS. 10 kitchens ≈ same $10-12 VPS cost.
+**All infrastructure runs on your MacBook via Docker Compose.**  
+No VPS, no cloud, no domain required to build and demo the MVP.
 
 ---
 
@@ -898,7 +900,7 @@ Multiple kitchens can share the same VPS. 10 kitchens ≈ same $10-12 VPS cost.
 ### Customer Context
 - System remembers past orders and preferences (per item)
 - AI personalizes responses based on customer history
-- Cart survives VPS reboot (Redis persistence)
+- Cart survives container restart (Redis persistence)
 - Auto cut-off when daily max orders reached (per item per batch slot)
 - Post-delivery ratings feed into AI quality data
 
