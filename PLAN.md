@@ -99,8 +99,9 @@ orders: id, kitchen_id, customer_id, order_type (one_time/subscription),
         menu_item_id, quantity, total_amount,
         status (pending/confirmed/preparing/ready/delivered/cancelled),
         batch_time_slot, delivery_address,
-        payment_status, notes, created_at,
-        ready_by_time, delivered_at
+        payment_status (pending/paid/unpaid/disputed),
+        payment_screenshot_url, payment_verified_at,
+        notes, created_at, ready_by_time, delivered_at
 
 -- Subscriptions (post-MVP)
 subscriptions: id, customer_id, kitchen_id,
@@ -108,6 +109,11 @@ subscriptions: id, customer_id, kitchen_id,
                start_date, end_date,
                status (active/paused/cancelled),
                daily_quantity
+
+-- Ratings & Feedback
+ratings: id, order_id, customer_id, kitchen_id,
+         score (1-5), complaint_category,
+         complaint_text, created_at
 
 -- AI Context Memory
 customer_context: id, customer_id, kitchen_id,
@@ -149,7 +155,7 @@ daily_inventory: id, kitchen_id, date,
 
 ---
 
-## Telegram Bot Conversation Flow
+## Telegram Bot Conversation Flow (End-to-End)
 
 ```
 Customer sends "Hi" to bot
@@ -198,17 +204,120 @@ Bot sends: "🎉 Enjoy your meal! Thank you for ordering!"
 
 ---
 
+## Payment Confirmation Flow
+
+Payments are handled P2P (UPI/Cash outside the platform), but the system tracks payment status.
+
+### Flow
+```
+Order delivered → 30 min later → Bot sends:
+"💵 Payment Reminder: ₹150 for Veg Thali
+ Did you pay? [✅ I have paid] [❌ Not yet]
+
+ (Optional: Upload UPI screenshot)"
+
+Customer taps "✅ I have paid":
+→ Bot: "Please upload a screenshot of the payment (optional).
+        [📎 Upload Screenshot] or [⏭ Skip]"
+
+After upload or skip:
+→ Bot: "✅ Payment confirmation sent to the kitchen! Thank you!"
+
+→ Owner PWA gets alert: "💰 Payment claimed by Priya - Order #42
+    [Verify] [Dispute]"
+
+Owner taps "Verify":
+→ Payment marked as paid in system
+→ Bot sends to customer: "✅ Payment verified by [Kitchen Name]. Thank you! 🙏"
+
+If customer doesn't respond within 30 mins:
+→ Bot sends reminder: "⏰ Friendly reminder: Payment of ₹150 is pending."
+
+If customer marks "Not yet":
+→ Bot: "No problem! Please pay via UPI to [UPI ID] or cash on next delivery.
+     You can tap 'I have paid' anytime."
+```
+
+---
+
+## Discovery & Growth Engine
+
+Telegram is powerful for retention but poor for discovery. The system includes built-in growth tools.
+
+### Shareable Assets (Auto-Generated in Owner PWA)
+
+| Asset | Purpose | Where to Share |
+|---|---|---|
+| **QR Code** | Direct deep link to bot (`t.me/KitchenBot?start=kitchen123`) | Sticky on delivery boxes, printouts in apartment lobbies |
+| **Deep Link** | `t.me/KitchenBot?start=promo` with referral tracking | WhatsApp groups, Instagram stories |
+| **Share Card** | Branded image with menu highlights + bot link | Social media, local Facebook groups |
+
+### In-Owner PWA (Menu → Share)
+
+```
+Menu Screen → Share Icon → [Download QR Code] [Copy Bot Link] [Share as Image]
+```
+
+### Super Admin Panel
+- Track which kitchens are using QR codes
+- Generate printable marketing sheets (QR + menu + timing)
+- View bot join sources (deep link parameter analytics)
+
+---
+
+## Trust Loop & Feedback System
+
+A post-delivery feedback mechanism that builds quality data and improves AI context.
+
+### Flow
+
+```
+2 hours after "Delivered" status:
+
+Bot sends: "🌟 How was your meal from [Kitchen Name] today?
+           ⭐⭐⭐⭐⭐ (Tap to rate)"
+
+Customer rates 4-5⭐:
+→ Bot: "Wonderful! Glad you enjoyed it! 😊 We'd love to have you again!"
+→ AI memory: records positive sentiment, reinforces item recommendation
+
+Customer rates 1-3⭐:
+→ Bot: "Sorry to hear that! 🙏 Could you tell us what went wrong?
+        [👎 Too salty] [🕐 Late delivery] [🍛 Less quantity] [💬 Other]"
+→ Owner PWA alert: "⚠️ Low rating alert! Priya gave 2⭐ for Veg Thali"
+→ AI memory: records issue, adjusts future recommendations for that item
+```
+
+### Benefits
+- **Quality control:** Owners see ratings trend per menu item over time
+- **AI improvement:** Low-rated items get deprioritized in AI recommendations
+- **Customer retention:** A quick follow-up shows the kitchen cares
+- **Early warning:** Detect issues (salt level, timing, portion size) before they escalate
+
+### Data in Owner PWA
+
+```
+Analytics Tab → Ratings Section:
+  - Average rating today/week/month
+  - Rating distribution (pie chart: 1⭐ to 5⭐)
+  - Top complaints (grouped: taste, timing, quantity)
+  - Per-item rating breakdown
+```
+
+---
+
 ## PWA Owner Dashboard (Features)
 
 ### Home Screen (Today at a Glance)
 - Active orders count
 - Remaining inventory (percentage bars per item)
 - Today's revenue
-- Pending actions (new orders, unanswered AI fallbacks)
+- Pending actions (new orders, unanswered AI fallbacks, unverified payments)
 
 ### Orders Tab
 - List view with status filters (All/New/Preparing/Ready/Delivered)
 - Each order: customer name, items, prep time remaining
+- Payment status badge (paid/unpaid/pending verification)
 - Tap to change status (with haptic feedback)
 - Sound/vibration alert for new orders
 
@@ -217,10 +326,12 @@ Bot sends: "🎉 Enjoy your meal! Thank you for ordering!"
 - Set daily max quantity per item
 - Toggle availability (available / sold out)
 - Set batch timings (Breakfast 7-9 AM, Lunch 12-2 PM, Dinner 7-9 PM)
+- **Share** button → [Download QR Code] [Copy Bot Link] [Share as Image]
 
 ### Customers Tab
 - List of all customers
 - Order history per customer
+- Payment reliability score (auto-calculated)
 - Personal notes field ("Lives in A-block, prefers less oil")
 
 ### AI Knowledge Base Settings
@@ -233,6 +344,10 @@ Bot sends: "🎉 Enjoy your meal! Thank you for ordering!"
 - Popular items ranking
 - Revenue trends (line chart)
 - Customer retention metrics
+- **Ratings & Feedback summary**
+  - Average rating (daily/weekly/monthly)
+  - Rating distribution chart
+  - Top complaint categories
 
 ---
 
@@ -240,8 +355,9 @@ Bot sends: "🎉 Enjoy your meal! Thank you for ordering!"
 
 - Create a new kitchen tenant
 - Generate and assign Telegram bot tokens
-- Configure kitchen details (name, address, delivery radius)
+- Configure kitchen details (name, address, delivery radius, UPI ID)
 - View all kitchens and their status
+- Generate printable marketing materials (QR + menu card)
 - System-wide monitoring
 
 ---
@@ -269,6 +385,8 @@ homechef/
 │   │   │   ├── orderService.ts
 │   │   │   ├── menuService.ts
 │   │   │   ├── inventoryService.ts
+│   │   │   ├── paymentService.ts
+│   │   │   ├── ratingService.ts
 │   │   │   └── customerService.ts
 │   │   ├── models/              # Database models (Prisma or knex)
 │   │   ├── config/              # Configs per kitchen
@@ -288,8 +406,10 @@ homechef/
 │   │   ├── components/
 │   │   │   ├── Layout.tsx
 │   │   │   ├── OrderCard.tsx
+│   │   │   ├── PaymentVerifyCard.tsx
+│   │   │   ├── RatingChart.tsx
 │   │   │   ├── StatusBadge.tsx
-│   │   │   └── ...
+│   │   │   └── ShareSheet.tsx    # QR code + link generator
 │   │   ├── hooks/
 │   │   ├── services/            # API client
 │   │   ├── store/               # State management (zustand)
@@ -320,17 +440,18 @@ homechef/
 
 ### Week 1-2: Foundation
 - [ ] Backend setup (Node.js + TypeScript + Express)
-- [ ] PostgreSQL schema + migrations
+- [ ] PostgreSQL schema + migrations (including payments & ratings tables)
 - [ ] Authentication (Telegram OTP for owners, JWT for admin)
 - [ ] Telegram bot skeleton with multi-tenant support
 - [ ] Docker setup + deploy to VPS
 
-### Week 2-3: Core Ordering Flow
+### Week 2-3: Core Ordering Flow + Payments
 - [ ] Menu management CRUD API
 - [ ] Order creation & management API
 - [ ] Telegram: Menu display & order placement
 - [ ] Telegram: Order status notifications
 - [ ] Inventory tracking with auto cut-off
+- [ ] Payment confirmation flow (I have paid button + owner verify)
 
 ### Week 3-4: AI Engine
 - [ ] LangChain + DeepSeek V4 Flash integration
@@ -342,14 +463,15 @@ homechef/
 ### Week 4-5: Owner PWA Dashboard
 - [ ] React PWA setup (mobile-first design)
 - [ ] Home dashboard (orders, revenue, inventory)
-- [ ] Order management with status flow
-- [ ] Menu editor interface
+- [ ] Order management with status flow & payment verification
+- [ ] Menu editor interface with Share/QR code feature
 - [ ] Customer list with history
 
-### Week 5-6: Admin Panel & Polish
-- [ ] Super Admin Panel (kitchen creation, bot provisioning)
-- [ ] Customer preference tracking
-- [ ] Basic analytics
+### Week 5-6: Growth Tools + Feedback + Polish
+- [ ] QR code & deep link generator (shareable marketing assets)
+- [ ] Post-delivery rating & feedback system (Trust Loop)
+- [ ] Ratings analytics in Owner PWA
+- [ ] Super Admin Panel (kitchen creation, bot provisioning, marketing sheets)
 - [ ] Error handling & edge cases
 - [ ] Testing with a real pilot kitchen
 - [ ] Performance optimization
@@ -378,12 +500,18 @@ Multiple kitchens can share the same VPS. 10 kitchens ≈ same $10-12 VPS cost.
 - **Order types:** Both per-order and subscription (post-MVP)
 - **Batch production:** Meals produced in time-window batches (breakfast, lunch, dinner) with accommodation for special requests
 - **Delivery:** Owner handles delivery within ~5km radius
-- **Payments:** Tracked as paid/unpaid (P2P payments outside platform)
+- **Payments:** Tracked as paid/unpaid (P2P payments outside platform, verified by owner via "I have paid" button)
 
 ### Customer Context
 - System remembers past orders and preferences
 - AI personalizes responses based on customer history
 - Auto cut-off when daily max orders reached
+- Post-delivery ratings feed into AI quality data
+
+### Discovery & Retention Strategy
+- **Discovery:** QR codes on delivery boxes, deep links in WhatsApp groups, shareable menu cards
+- **Retention:** Telegram bot (daily menu push, reminders), personalized AI interactions, feedback follow-ups
+- **Trust:** Payment verification loop, post-delivery ratings, consistent quality tracking
 
 ---
 
@@ -393,7 +521,7 @@ Multiple kitchens can share the same VPS. 10 kitchens ≈ same $10-12 VPS cost.
 - Delivery tracking with ETA
 - Advanced analytics with forecasting
 - Multi-language support (Hindi, Kannada, Tamil, Bengali)
-- Payment gateway integration
+- Payment gateway integration (UPI auto-collect)
 - WhatsApp Business API integration (for users who prefer WhatsApp over Telegram)
 - Multi-kitchen chain management
 - Customer mobile app (optional)
