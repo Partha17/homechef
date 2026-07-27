@@ -155,6 +155,171 @@ daily_inventory: id, kitchen_id, date,
 
 ---
 
+## Critical Technical Concerns & Solutions
+
+### 1. Concurrency & The "Overselling" Problem
+
+**Problem:** Home chefs deal in strict batch limits (e.g., exactly 15 portions of Biryani). If two users confirm an order via the AI at the exact same millisecond, a standard `SELECT` then `UPDATE` will result in a race condition, and the chef has to cancel on a customer.
+
+**Solution: Dual-Layer Inventory Locking**
+
+```
+┌─ Order Placement Request ─────────────────────────────┐
+│                                                        │
+│  1. AI validates intent + checks menu availability     │
+│                                                        │
+│  2. REDIS ATOMIC LOCK (first line of defense)          │
+│     ├─ DECR(key: "inv:kitchen123:biryani:2026-07-27") │
+│     ├─ If result >= 0 → slot reserved, proceed         │
+│     └─ If result < 0 → "Sorry, sold out!"             │
+│                                                        │
+│  3. POSTGRES ROW-LEVEL LOCK (backstop)                 │
+│     ├─ BEGIN TRANSACTION                               │
+│     ├─ SELECT ... FROM daily_inventory                 │
+│     │  WHERE menu_item_id = X AND date = Y             │
+│     │  FOR UPDATE                                      │
+│     ├─ Verify booked_qty < max_qty                     │
+│     ├─ INSERT order + UPDATE booked_qty                │
+│     └─ COMMIT / ROLLBACK                               │
+│                                                        │
+│  4. If COMMIT fails (e.g., PG rejects):                │
+│     └─ INCR(key) to release Redis slot                 │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+```
+
+**Key Design Decisions:**
+- **Redis DECR is atomic** — no race condition possible at the millisecond level
+- **Postgres `SELECT ... FOR UPDATE`** — second safety net in case Redis crashes between DECR and order creation
+- **Rollback mechanism** — if Postgres rejects the order (constraint violation, etc.), the Redis slot is released via `INCR`
+- **Daily inventory reconciliation** — a cron job at the end of each day compares Redis counters vs Postgres records and resolves discrepancies
+
+### 2. AI Latency & UX
+
+**Problem:** LLM APIs (DeepSeek V4 Flash) have latency spikes of 2-6 seconds. If the bot takes too long to reply to "What's for lunch?", the user will spam the chat, potentially duplicating orders or messing up the conversation state.
+
+**Solution: Dual-Path Execution with Immediate Feedback**
+
+```
+┌─ Webhook Received ───────────────────────────────────────────┐
+│                                                               │
+│  1. IMMEDIATE ACTION (sub-100ms)                              │
+│     └─ Telegram sendChatAction("typing")                      │
+│        → User sees "Bot is typing..." instantly               │
+│                                                               │
+│  2. FAST PATH DETECTION                                       │
+│     └─ Simple regex/rule-based pre-classifier                 │
+│        Checks: starts with number? contains "menu"?           │
+│        known patterns?                                        │
+│        ├─ If FAST PATH matched (e.g., "menu" / "1 biryani"): │
+│        │  → Retrieve data from Redis cache (sub-50ms)        │
+│        │  → Send response immediately in <500ms               │
+│        └─ If NOT fast path:                                   │
+│           → Fall through to SLOW PATH                         │
+│                                                               │
+│  3. SLOW PATH (LLM execution)                                 │
+│     └─ Send another sendChatAction to keep "typing" alive     │
+│     └─ LangChain pipeline executes:                           │
+│        ├─ Step 1: Intent classification (call LLM)            │
+│        ├─ Step 2: Knowledge base retrieval (DB query)         │
+│        ├─ Step 3: Response generation (call LLM)              │
+│        └─ Step 4: Send final response to Telegram             │
+│                                                               │
+│  4. DUPLICATE MESSAGE HANDLING                                │
+│     └─ Deduplication key: (telegram_user_id + message_hash)   │
+│        stored in Redis with 5-second TTL                      │
+│        → If same user sends same message within 5s, ignore it │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Additional UX Safeguards:**
+- **Inline keyboard lockout** — Once an order button is tapped, the callback data includes a nonce that expires immediately after first use
+- **State machine per user** — Each user has a `conversation_state` in Redis. If they spam, the system processes only the latest message and drops all previous ones
+- **Idempotency on order placement** — `(telegram_user_id, menu_item_id, date, batch_slot)` has a unique constraint in Postgres, so duplicate orders for the same item in the same batch are impossible
+
+### 3. State Management Failure Modes
+
+**Problem:** LangChain's default `ConversationBufferMemory` stores conversation history in-memory (a JavaScript array). If the Node.js process restarts (VPS reboot, deployment, crash), **all in-flight conversations are lost**. The customer who was mid-way through ordering "2 biryani and 1 dal makhani" suddenly has to start over from scratch, leading to frustration and drop-offs.
+
+**Solution: Three-Layer Memory Architecture with Redis Persistence**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                  AI MEMORY ARCHITECTURE                   │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  LAYER 1: EPHEMERAL (LangChain in-memory)               │
+│  ───────────────────────────────────────                 │
+│  - Current LLM context window (last ~10 messages)        │
+│  - Lost on restart → OK, because Layer 2 restores it     │
+│  - Purpose: Token efficiency (avoids re-sending history) │
+│                                                          │
+│  LAYER 2: SHORT-TERM (Redis, TTL = 2 hours)             │
+│  ───────────────────────────────────────                 │
+│  KEY NAMESPACE: session:{kitchen_id}:{user_id}           │
+│                                                          │
+│  ├─ conversation_history: JSON array of last 50 msgs    │
+│  │  ↳ On restart → reload into LangChain memory          │
+│  │                                                        │
+│  ├─ user_state: {                                        │
+│  │     flow: "ordering" | "checking_status" | "idle",   │
+│  │     step: "awaiting_item" | "awaiting_qty" | ...,    │
+│  │     pending_order: { menu_item_id, qty }              │
+│  │   }                                                   │
+│  │                                                        │
+│  ├─ pending_actions: [                                   │
+│  │     { type: "payment_reminder", trigger_at: ... },    │
+│  │     { type: "rating_request", trigger_at: ... }       │
+│  │   ]                                                   │
+│  │                                                        │
+│  └─ TTL: 7200 seconds (2 hours)                          │
+│     ↳ Reset on each user interaction                     │
+│     ↳ Sufficient for any ordering flow                   │
+│                                                          │
+│  LAYER 3: LONG-TERM (PostgreSQL)                         │
+│  ───────────────────────────────────────                 │
+│  - customer_context table:                               │
+│    preferences (JSON), favorite_items[],                 │
+│    dietary_restrictions, past_complaints,                │
+│    payment_reliability_score                             │
+│  - Order history (orders table)                          │
+│  - Ratings & feedback (ratings table)                    │
+│  ↳ Survives everything — used for AI personalization     │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Recovery Flow on Restart:**
+
+```
+VPS Reboot / Node.js Crash
+        ↓
+Bot receives next message from user
+        ↓
+1. Check Redis for session:{kitchen}:{user}
+        ├─ EXISTS → Load conversation_history + user_state
+        │            → Rehydrate LangChain memory
+        │            → Resume exactly where user left off
+        └─ NOT EXISTS (TTL expired or first message)
+             → Start fresh conversation
+             → Load long-term context from PostgreSQL
+             → "Sorry for the delay! How can I help you?"
+        ↓
+2. If user was in the middle of placing an order:
+        → Bot: "I see you were ordering earlier. 
+                Would you like to continue? [Yes] [No]"
+        → On "Yes": Resume from last confirmed step
+        → On "No": Reset state, start new order
+```
+
+**Data Safety Guarantees:**
+- **Redis AOF (Append-Only File) persistence enabled** — if Redis itself restarts, the session data survives
+- **Redis maxmemory-policy: noeviction** — session keys are never evicted for space; only TTL expires them
+- **PostgreSQL as system of record** — all confirmed orders, payments, and ratings are in Postgres. Redis is only for in-flight conversation state, so losing it is inconvenient but never loses confirmed data
+- **Graceful degradation** — if Redis is down, LangChain falls back to in-memory only (ephemeral), and the system logs a critical alert
+---
+
 ## Telegram Bot Conversation Flow (End-to-End)
 
 ```
